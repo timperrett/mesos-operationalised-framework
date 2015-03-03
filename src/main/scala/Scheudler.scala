@@ -5,7 +5,7 @@ import org.apache.mesos.Scheduler
 import org.apache.mesos.SchedulerDriver
 import org.apache.mesos.Protos.{
   ExecutorID,OfferID,FrameworkID,MasterInfo,TaskID,
-  Offer,SlaveID,TaskStatus,TaskInfo,CommandInfo}
+  Offer,SlaveID,TaskStatus,TaskInfo,CommandInfo,TaskState}
 import com.typesafe.scalalogging.Logger
 import scala.collection.JavaConverters._
 import java.util.concurrent.atomic.AtomicInteger
@@ -204,5 +204,21 @@ case class CustomScheudler(
    * @param status The status update, which includes the task ID and status.
    *
    */
-  def statusUpdate(driver: SchedulerDriver, status: TaskStatus): Unit = ???
+  def statusUpdate(driver: SchedulerDriver, status: TaskStatus): Unit = {
+    import TaskState._
+    val id = status.getTaskId.getValue
+
+    log.info("recieved status update: " + status.getMessage)
+
+    status.getState match {
+      case TASK_STAGING   => ()
+      case TASK_STARTING  => ()
+      case TASK_RUNNING   => ()
+      case TASK_FINISHED  => ()
+      case TASK_FAILED    => ()
+      case TASK_KILLED    => ()
+      case TASK_LOST      => ()
+    }
+  }
+
 }
