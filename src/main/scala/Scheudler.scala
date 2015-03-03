@@ -4,10 +4,11 @@ import org.slf4j.LoggerFactory
 import org.apache.mesos.Scheduler
 import org.apache.mesos.SchedulerDriver
 import org.apache.mesos.Protos.{
-  ExecutorID,OfferID,FrameworkID,MasterInfo,
-  Offer,SlaveID,TaskStatus}
+  ExecutorID,OfferID,FrameworkID,MasterInfo,TaskID,
+  Offer,SlaveID,TaskStatus,TaskInfo,CommandInfo}
 import com.typesafe.scalalogging.Logger
 import scala.collection.JavaConverters._
+import java.util.concurrent.atomic.AtomicInteger
 
 object CustomScheudler {
   val log = Logger(LoggerFactory.getLogger("scheduler"))
@@ -18,10 +19,24 @@ object CustomScheudler {
  * https://github.com/apache/mesos/blob/master/src/java/src/org/apache/mesos/Scheduler.java
  */
 case class CustomScheudler(
-  instanceCount: Int, // number of container instances to launch
+  desiredInstanceCount: Int, // number of container instances to launch
   container: DockerContainer // information about the container to launch
 ) extends Scheduler {
   import CustomScheudler.log
+
+  /**
+   * All tasks that will later be spawned by this scheduler require a
+   * unique identifier. this could easily be a UUID or some other ID
+   * generation scheme with an extreamly low-probability of collision.
+   */
+  private val taskIDGenerator = new AtomicInteger(1)
+
+  /**
+   * Scheduler is guarenteed by mesos to only ever be single threaded, so
+   * having some private mutable state is never in danger of race-conditions
+   */
+  @volatile private var running: List[String] = List.empty
+  @volatile private var pending: List[String] = List.empty
 
   /**
    * Invoked when the scheduler becomes "disconnected" from the master
@@ -132,6 +147,33 @@ case class CustomScheudler(
    */
   def resourceOffers(driver: SchedulerDriver, offers: java.util.List[Offer]): Unit = {
     log.info(s"recieved offer of resources: ${offers.asScala.toList.mkString(",")}")
+
+    def mintTaskId: TaskID =
+      TaskID.newBuilder.setValue(Integer.toString(taskIDGenerator.incrementAndGet)).build
+
+    def createTask(taskId: TaskID)(offer: Offer): TaskInfo = {
+      val task = TaskInfo.newBuilder
+        .setName(s"task-${taskId.getValue}")
+        .setTaskId(taskId)
+        .setSlaveId(offer.getSlaveId())
+        .setContainer(container.info)
+        .setCommand(CommandInfo.newBuilder.setShell(false))
+      container.resources.foreach(r => task.addResources(r.build))
+      task.build
+    }
+
+    def shouldLaunchTask: Boolean =
+      (running.length + pending.length) < desiredInstanceCount
+
+    val tasks: List[TaskInfo] =
+      offers.asScala.toList.foldLeft(List.empty[TaskInfo]){ (a,b) =>
+        if(shouldLaunchTask) a :+ createTask(mintTaskId)(b)
+        else a
+      }
+
+    val offerIds = offers.asScala.map(_.getId)
+
+    driver.launchTasks(offerIds.asJavaCollection, tasks.asJavaCollection)
   }
 
   /**
