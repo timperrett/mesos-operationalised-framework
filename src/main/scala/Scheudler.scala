@@ -10,6 +10,7 @@ import org.apache.mesos.Protos.{
 import com.typesafe.scalalogging.Logger
 import scala.collection.JavaConverters._
 import java.util.concurrent.atomic.AtomicInteger
+import collection.mutable.{Set => MSet}
 
 object CustomScheudler {
   import Resource._
@@ -40,11 +41,11 @@ object CustomScheudler {
     (1 to demand).toSeq.map(_ => createTask(id(), slave, container))
 
   // TODO: change this Seq[Resource] to some other algebra
-  def decisionBySlave(offers: Seq[Offer], container: DockerContainer, f: () => TaskID): Seq[Decision] =
-    offers.groupBy(_.getSlaveId).toList.map { tup =>
+  def decisionBySlave(_offers: Seq[Offer], container: DockerContainer, f: () => TaskID): Seq[Decision] =
+    _offers.groupBy(_.getSlaveId).toList.map { tup =>
       val slave = tup._1
-      val offs  = tup._2
-      if(ifFits(reduce(offs), container.resources)) Accepted(slave, offers, createTasks(1,slave,container)(f) )
+      val offers  = tup._2
+      if(ifFits(reduce(offers), container.resources)) Accepted(slave, offers, createTasks(1,slave,container)(f) )
       else Declined(slave, offers)
     }
 
@@ -88,8 +89,8 @@ case class CustomScheudler(
    * Scheduler is guarenteed by mesos to only ever be single threaded, so
    * having some private mutable state is never in danger of race-conditions
    */
-  @volatile private var running: List[String] = List.empty
-  @volatile private var pending: List[String] = List.empty
+  @volatile private var running: MSet[String] = MSet.empty
+  @volatile private var pending: MSet[String] = MSet.empty
 
   /**
    * Invoked when the scheduler becomes "disconnected" from the master
@@ -208,7 +209,7 @@ case class CustomScheudler(
       TaskID.newBuilder.setValue(Integer.toString(taskIDGenerator.incrementAndGet)).build
 
     def shouldLaunchTask: Boolean =
-      (running.length + pending.length) < desiredInstanceCount
+      (running.size + pending.size) < desiredInstanceCount
 
     /*
     offers need to be grouped by the slave id from which they were from
@@ -221,6 +222,12 @@ case class CustomScheudler(
       case Accepted(slave, offs, tasks) => {
         if(shouldLaunchTask){
           log.info("launching tasks...")
+
+          log.info(">>>>>>>>>>>>>>>>>>>>>>>>>>>>")
+          log.info(s"slave    = " + slave.getValue)
+          log.info(s"offerids = " + offs.map(_.getId.getValue).mkString(", "))
+          log.info("<<<<<<<<<<<<<<<<<<<<<<<<<<<<")
+
           driver.launchTasks(offs.map(_.getId).asJavaCollection, tasks.asJavaCollection)
         }
         else{
@@ -271,13 +278,16 @@ case class CustomScheudler(
     log.info("recieved status update: " + status.getMessage)
 
     status.getState match {
-      case TASK_STAGING   => ()
-      case TASK_STARTING  => ()
-      case TASK_RUNNING   => ()
-      case TASK_FINISHED  => ()
-      case TASK_FAILED    => ()
-      case TASK_KILLED    => ()
-      case TASK_LOST      => ()
+      case TASK_STAGING => ()
+      case TASK_STARTING =>
+        pending += id
+
+      case TASK_RUNNING =>
+        pending -= id
+        running += id
+
+      case TASK_FINISHED | TASK_FAILED | TASK_KILLED | TASK_LOST =>
+        running -= id
     }
   }
 

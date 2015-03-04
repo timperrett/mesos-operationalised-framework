@@ -16,6 +16,8 @@ scalaVersion := "2.11.4"
 
 scalacOptions += "-deprecation"
 
+ivyScala := ivyScala.value map { _.copy(overrideScalaVersion = true) }
+
 mainClass in assembly := Some("example.Framework")
 
 assemblyJarName in assembly := "example-framework.jar"

@@ -45,7 +45,7 @@ object Framework {
     val frameworkFailoverTimeout = 1.hour.toSeconds // what unit is this? seconds?
     val framework = FrameworkInfo.newBuilder
         .setName("ExampleFramework")
-        .setUser("") // Have Mesos fill in the current user.
+        .setUser("root") // Have Mesos fill in the current user.
         .setFailoverTimeout(frameworkFailoverTimeout)
         .setCheckpoint(sys.env.get("MESOS_CHECKPOINT").map(_.toBoolean).getOrElse(false))
         .setPrincipal(principal)
