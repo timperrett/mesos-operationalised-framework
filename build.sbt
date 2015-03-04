@@ -4,9 +4,12 @@ organization := "com.timperrett"
 name := "mesos-operationalised-framework"
 
 libraryDependencies ++= Seq(
-  "org.apache.mesos"            % "mesos"           % "0.20.1",
-  "com.typesafe.scala-logging" %% "scala-logging"   % "3.1.0",
-  "ch.qos.logback"              % "logback-classic" % "1.1.2"
+  "org.apache.mesos"            % "mesos"             % "0.20.1",
+  "com.typesafe.scala-logging" %% "scala-logging"     % "3.1.0",
+  "ch.qos.logback"              % "logback-classic"   % "1.1.2",
+  "org.scalaz"                 %% "scalaz-core"       % "7.1.1",
+  "org.apache.curator"          % "curator-framework" % "2.7.1",
+  "org.apache.curator"          % "curator-recipes"   % "2.7.1"
 )
 
 scalaVersion := "2.11.4"

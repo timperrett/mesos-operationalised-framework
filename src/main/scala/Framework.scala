@@ -15,7 +15,7 @@ object Framework {
   val DefaultPrincipal = "example-framework"
 
   def main(args: Array[String]): Unit = {
-    import Resources.{CPU,Memory}
+    import Resource.{CPU,Memory}
 
     val master = args.head
 

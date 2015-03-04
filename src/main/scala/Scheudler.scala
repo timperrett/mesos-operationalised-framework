@@ -3,6 +3,7 @@ package example
 import org.slf4j.LoggerFactory
 import org.apache.mesos.Scheduler
 import org.apache.mesos.SchedulerDriver
+import org.apache.mesos.Protos
 import org.apache.mesos.Protos.{
   ExecutorID,OfferID,FrameworkID,MasterInfo,TaskID,
   Offer,SlaveID,TaskStatus,TaskInfo,CommandInfo,TaskState}
@@ -11,7 +12,59 @@ import scala.collection.JavaConverters._
 import java.util.concurrent.atomic.AtomicInteger
 
 object CustomScheudler {
+  import Resource._
+
   val log = Logger(LoggerFactory.getLogger("scheduler"))
+
+  sealed trait Decision
+  case class Declined(slave: SlaveID, offers: Seq[Offer]) extends Decision
+  case class Accepted(slave: SlaveID, offers: Seq[Offer], tasks: Seq[TaskInfo]) extends Decision
+
+  case class Offered(
+    memory: Memory,
+    cpu: CPU
+  )
+
+  def createTask(id: TaskID, slave: SlaveID, container: DockerContainer): TaskInfo = {
+    val task = TaskInfo.newBuilder
+      .setName(s"task-${id.getValue}")
+      .setTaskId(id)
+      .setSlaveId(slave)
+      .setContainer(container.info)
+      .setCommand(CommandInfo.newBuilder.setShell(false))
+    container.resources.foreach(r => task.addResources(r.build))
+    task.build
+  }
+
+  def createTasks(demand: Int, slave: SlaveID, container: DockerContainer)(id: () => TaskID): Seq[TaskInfo] =
+    (1 to demand).toSeq.map(_ => createTask(id(), slave, container))
+
+  // TODO: change this Seq[Resource] to some other algebra
+  def decisionBySlave(offers: Seq[Offer], container: DockerContainer, f: () => TaskID): Seq[Decision] =
+    offers.groupBy(_.getSlaveId).toList.map { tup =>
+      val slave = tup._1
+      val offs  = tup._2
+      if(ifFits(reduce(offs), container.resources)) Accepted(slave, offers, createTasks(1,slave,container)(f) )
+      else Declined(slave, offers)
+    }
+
+  def ifFits(offered: Offered, needed: Seq[Resource]): Boolean =
+    needed.map {
+      case CPU(d) if offered.cpu.count >= d           => true
+      case Memory(d) if offered.memory.megabytes >= d => true
+      case _                                          => false
+    }.foldLeft(true)(_ && _)
+
+  def reduce(offers: Seq[Offer]): Offered =
+    offers.flatMap(_.getResourcesList.asScala)
+          .flatMap(Resource.fromProto)
+          .foldLeft(Offered(Memory(0d), CPU(0d))){ (a,b) =>
+            b match {
+              case Memory(d) => a.copy(memory = Memory(a.memory.megabytes + d))
+              case CPU(d)    => a.copy(cpu    = CPU(a.cpu.count + d))
+            }
+          }
+
 }
 
 /**
@@ -22,7 +75,7 @@ case class CustomScheudler(
   desiredInstanceCount: Int, // number of container instances to launch
   container: DockerContainer // information about the container to launch
 ) extends Scheduler {
-  import CustomScheudler.log
+  import CustomScheudler._
 
   /**
    * All tasks that will later be spawned by this scheduler require a
@@ -145,35 +198,42 @@ case class CustomScheudler(
    * @param driver  The driver that was used to run this scheduler.
    * @param offers  The resources offered to this framework.
    */
-  def resourceOffers(driver: SchedulerDriver, offers: java.util.List[Offer]): Unit = {
-    log.info(s"recieved offer of resources: ${offers.asScala.toList.mkString(",")}")
+  def resourceOffers(driver: SchedulerDriver, _offers: java.util.List[Offer]): Unit = {
+    // just scalafy input once.
+    val offers: List[Offer] = _offers.asScala.toList
+
+    log.info(s"recieved offer of resources: ${offers.map(_.getId).mkString(",")}")
 
     def mintTaskId: TaskID =
       TaskID.newBuilder.setValue(Integer.toString(taskIDGenerator.incrementAndGet)).build
 
-    def createTask(taskId: TaskID)(offer: Offer): TaskInfo = {
-      val task = TaskInfo.newBuilder
-        .setName(s"task-${taskId.getValue}")
-        .setTaskId(taskId)
-        .setSlaveId(offer.getSlaveId())
-        .setContainer(container.info)
-        .setCommand(CommandInfo.newBuilder.setShell(false))
-      container.resources.foreach(r => task.addResources(r.build))
-      task.build
-    }
-
     def shouldLaunchTask: Boolean =
       (running.length + pending.length) < desiredInstanceCount
 
-    val tasks: List[TaskInfo] =
-      offers.asScala.toList.foldLeft(List.empty[TaskInfo]){ (a,b) =>
-        if(shouldLaunchTask) a :+ createTask(mintTaskId)(b)
-        else a
+    /*
+    offers need to be grouped by the slave id from which they were from
+    so that we only ever look at all offers from a given slave before
+    attempting to launch tasks (on a given slave with a collection of
+    offers for that slave).
+    */
+
+    decisionBySlave(offers, container, mintTaskId _).foreach {
+      case Accepted(slave, offs, tasks) => {
+        if(shouldLaunchTask){
+          log.info("launching tasks...")
+          driver.launchTasks(offs.map(_.getId).asJavaCollection, tasks.asJavaCollection)
+        }
+        else{
+          log.info("accepted offers but not launching any tasks. WAT.")
+          ()
+        }
       }
 
-    val offerIds = offers.asScala.map(_.getId)
-
-    driver.launchTasks(offerIds.asJavaCollection, tasks.asJavaCollection)
+      case Declined(slave, offs) => {
+        log.info(s"decling slave '${slave.getValue}' offers ${offs.map(_.getId.getValue).mkString(",")}")
+        offs.map(_.getId).foreach(driver.declineOffer)
+      }
+    }
   }
 
   /**
